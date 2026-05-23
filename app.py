@@ -90,17 +90,15 @@ def generate_pairs(route, src, dst, spread=2):
 
 # --- 4. ASYNC API ORCHESTRATOR (Live RapidAPI Fetch) ---
 async def fetch_availability(session, train, travel_date, cls, src, dst, p_type):
-    # The correct endpoint for Waitlist data on your new API
     url = "https://irctc1.p.rapidapi.com/api/v1/checkSeatAvailability"
     
-    # irctc1 requires these exact parameter names
     querystring = {
         "trainNo": train,
         "fromStationCode": src,
         "toStationCode": dst,
-        "date": travel_date, # Requires YYYY-MM-DD or DD-MM-YYYY depending on playground
+        "date": travel_date, 
         "classType": cls,
-        "quota": "GN" # General Quota
+        "quota": "GN" 
     }
     
     headers = {
@@ -111,13 +109,22 @@ async def fetch_availability(session, train, travel_date, cls, src, dst, p_type)
     try:
         async with session.get(url, headers=headers, params=querystring) as response:
             data = await response.json()
-            print(f"API Response for {src} to {dst}: {data}") 
             
-            # The JSON mapping for irctc1 (You may need to tweak this after viewing the logs)
-            # Often, irctc1 wraps data in a "data" array or dictionary
+            # Print to your terminal so you can see EXACTLY what the API sent back
+            print(f"RAW API JSON for {src}->{dst}: {data}") 
+            
+            # --- THE BULLETPROOF PARSER ---
+            # 1. Check if the API returned an explicit error (like "Train not found")
+            if data.get("status") is False:
+                error_msg = data.get("message", "API Error")
+                return {"src": src, "dst": dst, "type": p_type, "status": f"Failed: {error_msg}", "price": 0}
+            
+            # 2. Check if the "data" key exists AND contains the list we expect
             if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                 status = data["data"][0].get("currentStatus", "N/A")
                 price = data["data"][0].get("ticketFare", 0)
+            
+            # 3. Fallback if the data exists but isn't wrapped in a list
             else:
                 status = data.get("currentStatus", "N/A")
                 price = data.get("ticketFare", 0)
@@ -125,8 +132,7 @@ async def fetch_availability(session, train, travel_date, cls, src, dst, p_type)
             return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
             
     except Exception as e:
-        print(f"API Error: {str(e)}")
-        return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Error", "price": 0}
+        return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Parse Error", "price": 0}
 
 async def orchestrate_search(train, travel_date, cls, src, dst):
     pairs = generate_pairs(TRAIN_ROUTE, src, dst, spread=2)
