@@ -90,19 +90,16 @@ def generate_pairs(route, src, dst, spread=2):
 
 # --- 4. ASYNC API ORCHESTRATOR (Live RapidAPI Fetch) ---
 async def fetch_availability(session, train, travel_date, cls, src, dst, p_type):
-    # UPDATED: Pointing to the newly subscribed API
     url = "https://indian-railway-seat-availability.p.rapidapi.com/v1/seat-availability"
     
+    # THE 3 PARAMETERS: 
+    # Check your screenshot to ensure these variable names exactly match (e.g., "source" vs "from")
     querystring = {
-        "trainNo": train,
-        "source": src,
-        "destination": dst,
-        "classType": cls,
-        "quota": "GN",
-        "date": travel_date 
+        "source": src,           
+        "destination": dst,      
+        "date": travel_date      
     }
     
-    # UPDATED: New host header
     headers = {
         "x-rapidapi-key": st.secrets["RAPIDAPI_KEY"],
         "x-rapidapi-host": "indian-railway-seat-availability.p.rapidapi.com"
@@ -112,30 +109,43 @@ async def fetch_availability(session, train, travel_date, cls, src, dst, p_type)
         async with session.get(url, headers=headers, params=querystring) as response:
             data = await response.json()
             
-            # Print to your terminal so you can see EXACTLY what the API sent back
             print(f"RAW API JSON for {src}->{dst}: {data}") 
             
-            # THE BULLETPROOF PARSER
-            # 1. Catch explicit API-level errors
-            if data.get("status") is False or "error" in data:
-                error_msg = data.get("message", data.get("error", "API Error"))
+            # 1. API Error Guard: Check if the 'trains' array actually exists
+            if "trains" not in data:
+                error_msg = data.get("message", data.get("error", "Invalid route or date"))
                 return {"src": src, "dst": dst, "type": p_type, "status": f"Failed: {error_msg}", "price": 0}
             
-            # 2. Safely extract nested list data
-            if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                status = data["data"][0].get("currentStatus", "N/A")
-                price = data["data"][0].get("ticketFare", 0)
+            # 2. The Filter: Loop through all trains to find the one the user typed (e.g., 20630)
+            target_train = None
+            for t in data["trains"]:
+                if str(t.get("train_number")) == str(train):
+                    target_train = t
+                    break
+                    
+            # 3. Data Extraction (Mapped exactly to your example JSON)
+            if target_train:
+                status = target_train.get("availability", "N/A")
+                
+                # The JSON example shows 'fare' is a dictionary object: "fare": {}
+                fare_data = target_train.get("fare", {})
+                
+                # We safely extract the number depending on how the API nests the price
+                if isinstance(fare_data, dict):
+                    # It will look for standard price keys
+                    price = fare_data.get("total_fare", fare_data.get("amount", fare_data.get("fare", 0)))
+                else:
+                    price = fare_data
+                    
+                return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
             
-            # 3. Fallback if the data isn't wrapped in a list
             else:
-                status = data.get("currentStatus", data.get("status", "N/A"))
-                price = data.get("ticketFare", data.get("fare", 0))
-            
-            return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
+                return {"src": src, "dst": dst, "type": p_type, "status": "Train doesn't run on this route", "price": 0}
             
     except Exception as e:
         print(f"Fetch Error: {str(e)}")
         return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Parse Error", "price": 0}
+
 
 async def orchestrate_search(train, travel_date, cls, src, dst):
     pairs = generate_pairs(TRAIN_ROUTE, src, dst, spread=2)
