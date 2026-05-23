@@ -90,36 +90,37 @@ def generate_pairs(route, src, dst, spread=2):
 
 # --- 4. ASYNC API ORCHESTRATOR (Live RapidAPI Fetch) ---
 async def fetch_availability(session, train, travel_date, cls, src, dst, p_type):
-    """
-    Fires asynchronous requests to the live RapidAPI endpoint.
-    """
-    # NOTE: Check your RapidAPI Playground if this exact URL path needs adjusting
-    url = "https://irctc-api2.p.rapidapi.com/api/v1/checkSeatAvailability"
+    # The correct endpoint for Waitlist data on your new API
+    url = "https://irctc1.p.rapidapi.com/api/v1/checkSeatAvailability"
     
-    # Adjust parameter keys if the specific API requires different names (e.g., 'sourceStation')
+    # irctc1 requires these exact parameter names
     querystring = {
         "trainNo": train,
-        "source": src,
-        "destination": dst,
+        "fromStationCode": src,
+        "toStationCode": dst,
+        "date": travel_date, # Requires YYYY-MM-DD or DD-MM-YYYY depending on playground
         "classType": cls,
-        "date": travel_date 
+        "quota": "GN" # General Quota
     }
     
     headers = {
-        "X-RapidAPI-Key": st.secrets["RAPIDAPI_KEY"],
-        "X-RapidAPI-Host": "irctc-api2.p.rapidapi.com"
+        "x-rapidapi-key": st.secrets["RAPIDAPI_KEY"],
+        "x-rapidapi-host": "irctc1.p.rapidapi.com"
     }
     
     try:
         async with session.get(url, headers=headers, params=querystring) as response:
             data = await response.json()
+            print(f"API Response for {src} to {dst}: {data}") 
             
-            # Print to Streamlit Cloud Logs for easy debugging of exact JSON keys
-            print(f"API Response for {src} to {dst}: {data}")
-            
-            # Adjust these mapping keys based on the actual JSON structure printed in the logs
-            status = data.get("current_status", "N/A")
-            price = data.get("ticket_fare", 0)
+            # The JSON mapping for irctc1 (You may need to tweak this after viewing the logs)
+            # Often, irctc1 wraps data in a "data" array or dictionary
+            if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+                status = data["data"][0].get("currentStatus", "N/A")
+                price = data["data"][0].get("ticketFare", 0)
+            else:
+                status = data.get("currentStatus", "N/A")
+                price = data.get("ticketFare", 0)
             
             return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
             
