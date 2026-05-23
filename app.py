@@ -63,7 +63,7 @@ def load_offline_stations():
 STATIONS = load_offline_stations()
 
 # Mock route for testing Train 20630. 
-# (Future Upgrade: Fetch this array dynamically via a Train Route API)
+# (Future Upgrade: Fetch this array dynamically via a live Train Route API)
 TRAIN_ROUTE = ["PGT", "CBE", "TUP", "ED", "SA", "KPD", "TPTY", "RU"]
 
 
@@ -90,20 +90,22 @@ def generate_pairs(route, src, dst, spread=2):
 
 # --- 4. ASYNC API ORCHESTRATOR (Live RapidAPI Fetch) ---
 async def fetch_availability(session, train, travel_date, cls, src, dst, p_type):
-    url = "https://irctc1.p.rapidapi.com/api/v1/checkSeatAvailability"
+    # UPDATED: Pointing to the newly subscribed API
+    url = "https://indian-railway-seat-availability.p.rapidapi.com/v1/seat-availability"
     
     querystring = {
         "trainNo": train,
-        "fromStationCode": src,
-        "toStationCode": dst,
-        "date": travel_date, 
+        "source": src,
+        "destination": dst,
         "classType": cls,
-        "quota": "GN" 
+        "quota": "GN",
+        "date": travel_date 
     }
     
+    # UPDATED: New host header
     headers = {
         "x-rapidapi-key": st.secrets["RAPIDAPI_KEY"],
-        "x-rapidapi-host": "irctc1.p.rapidapi.com"
+        "x-rapidapi-host": "indian-railway-seat-availability.p.rapidapi.com"
     }
     
     try:
@@ -113,30 +115,35 @@ async def fetch_availability(session, train, travel_date, cls, src, dst, p_type)
             # Print to your terminal so you can see EXACTLY what the API sent back
             print(f"RAW API JSON for {src}->{dst}: {data}") 
             
-            # --- THE BULLETPROOF PARSER ---
-            # 1. Check if the API returned an explicit error (like "Train not found")
-            if data.get("status") is False:
-                error_msg = data.get("message", "API Error")
+            # THE BULLETPROOF PARSER
+            # 1. Catch explicit API-level errors
+            if data.get("status") is False or "error" in data:
+                error_msg = data.get("message", data.get("error", "API Error"))
                 return {"src": src, "dst": dst, "type": p_type, "status": f"Failed: {error_msg}", "price": 0}
             
-            # 2. Check if the "data" key exists AND contains the list we expect
+            # 2. Safely extract nested list data
             if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                 status = data["data"][0].get("currentStatus", "N/A")
                 price = data["data"][0].get("ticketFare", 0)
             
-            # 3. Fallback if the data exists but isn't wrapped in a list
+            # 3. Fallback if the data isn't wrapped in a list
             else:
-                status = data.get("currentStatus", "N/A")
-                price = data.get("ticketFare", 0)
+                status = data.get("currentStatus", data.get("status", "N/A"))
+                price = data.get("ticketFare", data.get("fare", 0))
             
             return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
             
     except Exception as e:
+        print(f"Fetch Error: {str(e)}")
         return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Parse Error", "price": 0}
 
 async def orchestrate_search(train, travel_date, cls, src, dst):
     pairs = generate_pairs(TRAIN_ROUTE, src, dst, spread=2)
     
+    # Guard clause if the stations selected aren't in our hardcoded test route
+    if not pairs:
+        return [{"src": src, "dst": dst, "type": "baseline", "error": True, "status": "Station not in test route", "price": 0}]
+
     async with aiohttp.ClientSession() as session:
         tasks = [fetch_availability(session, train, travel_date, cls, p["src"], p["dst"], p["type"]) for p in pairs]
         results = await asyncio.gather(*tasks)
@@ -152,16 +159,16 @@ with st.container():
     col1, col2 = st.columns(2)
     
     with col1:
-        # Pre-select ED (Erode) if it exists in the JSON, otherwise fallback to index 0
         default_src_idx = list(STATIONS.keys()).index("ED") if "ED" in STATIONS else 0
         src_input = st.selectbox("From", options=list(STATIONS.keys()), index=default_src_idx, format_func=lambda x: f"{x} - {STATIONS[x]}")
         
         train_input = st.text_input("Train No.", value="20630")
         
-        # New Date Input formatted as YYYY-MM-DD
         date_input = st.date_input("Travel Date", min_value=datetime.today())
-        # date format:
-        formatted_date = date_input.strftime("%d-%m-%Y") 
+        
+        # NOTE: Most IRCTC APIs require YYYY-MM-DD. 
+        # If this fails with a date error, change it back to "%d-%m-%Y"
+        formatted_date = date_input.strftime("%Y-%m-%d") 
 
 
     with col2:
@@ -184,7 +191,6 @@ if st.button("Find Better Waitlist", type="primary", use_container_width=True):
             
             st.markdown("### Search Results")
             
-            # Display Baseline
             if baseline:
                 st.markdown(f"""
                 <div class="baseline-card">
@@ -199,12 +205,13 @@ if st.button("Find Better Waitlist", type="primary", use_container_width=True):
                 
             st.divider()
             
-            # Display Alternates
             if alternates:
                 st.markdown("### Recommended Alternates")
                 for alt in alternates:
-                    # In a production app, you would add logic here to parse the WL number 
-                    # and strictly show only statuses that are mathematically better.
+                    # Skip rendering if it returned a raw Parse Error
+                    if alt['status'] == "Parse Error":
+                        continue
+
                     st.markdown(f"""
                     <div class="hacked-card">
                         <div style="font-size: 12px; color: #10b981; font-weight: 600; margin-bottom: 8px;">ALTERNATE QUOTA FOUND</div>
@@ -216,7 +223,6 @@ if st.button("Find Better Waitlist", type="primary", use_container_width=True):
                     a_col1.metric("Status", alt['status'])
                     a_col2.metric("Total Fare", f"₹{alt['price']}")
                     
-                    # Prevent math errors if price is missing/string
                     try:
                         extra_cost = int(alt['price']) - int(baseline['price'])
                         a_col3.metric("Cost Difference", f"₹{extra_cost}")
@@ -224,4 +230,4 @@ if st.button("Find Better Waitlist", type="primary", use_container_width=True):
                         a_col3.metric("Cost Difference", "N/A")
             else:
                 st.info("No alternate routes could be fetched successfully.")
-            
+                           
