@@ -153,7 +153,9 @@ with st.container():
         
         # New Date Input formatted as YYYY-MM-DD
         date_input = st.date_input("Travel Date", min_value=datetime.today())
-        formatted_date = date_input.strftime("%Y-%m-%d")
+        # date format:
+        formatted_date = date_input.strftime("%d-%m-%Y") 
+
 
     with col2:
         default_dst_idx = list(STATIONS.keys()).index("TPTY") if "TPTY" in STATIONS else 1
