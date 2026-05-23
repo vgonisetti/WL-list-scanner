@@ -66,22 +66,29 @@ def generate_pairs(route, src, dst, spread=2):
 
 # --- 4. ASYNC API ORCHESTRATOR ---
 async def fetch_availability(session, train, cls, src, dst, p_type):
-    """
-    Mock asynchronous API call. Replace the sleep and mock data with an actual aiohttp 
-    request to your RapidAPI endpoint when you are ready.
-    """
-    await asyncio.sleep(0.8) # Simulate network latency
+    # The exact URL and params will depend on the specific RapidAPI you choose
+    url = "https://irctc-api-placeholder.p.rapidapi.com/api/v1/checkSeatAvailability"
     
-    # Mocking the specific scenario
-    status, price = "WL 15", 980
-    if p_type == "baseline":
-        status, price = "WL 11", 980
-    elif src == "PGT" and dst == "RU":
-        status, price = "WL 3", 1300
-    elif src == "CBE" and dst == "TPTY":
-        status, price = "WL 8", 1100
-
-    return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
+    # Pass the variables dynamically for each alternate route
+    querystring = {"trainNo": train, "sourceStation": src, "destinationStation": dst, "classType": cls}
+    
+    headers = {
+        "X-RapidAPI-Key": st.secrets["RAPIDAPI_KEY"], 
+        "X-RapidAPI-Host": "irctc-api-placeholder.p.rapidapi.com"
+    }
+    
+    try:
+        async with session.get(url, headers=headers, params=querystring) as response:
+            data = await response.json()
+            
+            # You will need to map these exact keys based on the API's JSON response
+            status = data.get("current_status", "N/A") 
+            price = data.get("ticket_fare", 0)
+            
+            return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
+            
+    except Exception as e:
+        return {"src": src, "dst": dst, "type": p_type, "error": str(e)}
 
 async def orchestrate_search(train, cls, src, dst):
     pairs = generate_pairs(TRAIN_ROUTE, src, dst, spread=2)
