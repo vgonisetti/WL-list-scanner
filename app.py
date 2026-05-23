@@ -7,7 +7,6 @@ from datetime import datetime
 # --- 1. UI CONFIGURATION & CUSTOM CSS ---
 st.set_page_config(page_title="SmartWL | Alternate Routes", layout="centered", initial_sidebar_state="collapsed")
 
-# Premium dark-theme CSS (High-Contrast, Minimalist)
 st.markdown("""
     <style>
     .stApp {
@@ -15,7 +14,7 @@ st.markdown("""
         color: #f8fafc;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 1.8rem;
+        font-size: 1.4rem;
         font-weight: 700;
     }
     .baseline-card {
@@ -36,34 +35,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- 2. OFFLINE DATA LAYER (Zero-Latency Station Load) ---
+# --- 2. OFFLINE DATA LAYER ---
 @st.cache_data
 def load_offline_stations():
-    """
-    Loads station codes instantly from the local JSON file.
-    Cached by Streamlit so it only runs once per server reboot.
-    """
     try:
         with open('list_of_stations.json', 'r') as file:
             raw_data = json.load(file)
             
         stations_dict = {}
         for item in raw_data:
-            # Handles different potential JSON key naming conventions
             code = item.get("code") or item.get("stationCode") or item.get("station_code")
             name = item.get("name") or item.get("stationName") or item.get("station_name")
             if code and name:
                 stations_dict[code] = name
-                
         return stations_dict
     except Exception as e:
-        st.error(f"Error loading offline stations: {e}")
-        return {"ED": "Erode", "TPTY": "Tirupati"} # Fallback
+        return {"ED": "Erode", "TPTY": "Tirupati"} 
 
 STATIONS = load_offline_stations()
-
-# Mock route for testing Train 20630. 
-# (Future Upgrade: Fetch this array dynamically via a live Train Route API)
 TRAIN_ROUTE = ["PGT", "CBE", "TUP", "ED", "SA", "KPD", "TPTY", "RU"]
 
 
@@ -76,7 +65,6 @@ def generate_pairs(route, src, dst, spread=2):
         return []
         
     pairs = [{"src": src, "dst": dst, "type": "baseline"}]
-    
     for i in range(1, spread + 1):
         if src_idx - i >= 0:
             pairs.append({"src": route[src_idx - i], "dst": dst, "type": "prev_board"})
@@ -88,71 +76,54 @@ def generate_pairs(route, src, dst, spread=2):
     return pairs
 
 
-# --- 4. ASYNC API ORCHESTRATOR (Live RapidAPI Fetch) ---
+# --- 4. ASYNC API ORCHESTRATOR ---
 async def fetch_availability(session, train, travel_date, cls, src, dst, p_type):
-    url = "https://indian-railway-seat-availability.p.rapidapi.com/v1/seat-availability"
+    # UPDATE THIS URL TO MATCH THE EXACT ONE IN YOUR RAPIDAPI PLAYGROUND
+    url = "https://irctc1.p.rapidapi.com/api/v3/getLiveStation" 
     
-    # THE 3 PARAMETERS: 
-    # Check your screenshot to ensure these variable names exactly match (e.g., "source" vs "from")
     querystring = {
-        "source": src,           
-        "destination": dst,      
-        "date": travel_date      
+        "fromStationCode": src,
+        "toStationCode": dst,
+        "date": travel_date 
     }
     
     headers = {
         "x-rapidapi-key": st.secrets["RAPIDAPI_KEY"],
-        "x-rapidapi-host": "indian-railway-seat-availability.p.rapidapi.com"
+        "x-rapidapi-host": "irctc1.p.rapidapi.com"
     }
     
     try:
         async with session.get(url, headers=headers, params=querystring) as response:
             data = await response.json()
             
+            # Print to Streamlit Cloud logs
             print(f"RAW API JSON for {src}->{dst}: {data}") 
             
-            # 1. API Error Guard: Check if the 'trains' array actually exists
-            if "trains" not in data:
-                error_msg = data.get("message", data.get("error", "Invalid route or date"))
-                return {"src": src, "dst": dst, "type": p_type, "status": f"Failed: {error_msg}", "price": 0}
+            if data.get("status") is False:
+                return {"src": src, "dst": dst, "type": p_type, "status": "API Error", "train_name": "N/A"}
             
-            # 2. The Filter: Loop through all trains to find the one the user typed (e.g., 20630)
-            target_train = None
-            for t in data["trains"]:
-                if str(t.get("train_number")) == str(train):
-                    target_train = t
-                    break
+            # Parsing the exact JSON array you provided
+            if "data" in data and isinstance(data["data"], list):
+                target_train = next((t for t in data["data"] if str(t.get("trainNumber")) == str(train)), None)
+                
+                if target_train:
+                    train_name = target_train.get("trainName", "Unknown")
+                    dep_time = target_train.get("departureTime", "N/A")
                     
-            # 3. Data Extraction (Mapped exactly to your example JSON)
-            if target_train:
-                status = target_train.get("availability", "N/A")
-                
-                # The JSON example shows 'fare' is a dictionary object: "fare": {}
-                fare_data = target_train.get("fare", {})
-                
-                # We safely extract the number depending on how the API nests the price
-                if isinstance(fare_data, dict):
-                    # It will look for standard price keys
-                    price = fare_data.get("total_fare", fare_data.get("amount", fare_data.get("fare", 0)))
+                    # Passing schedule data instead of waitlist data
+                    return {"src": src, "dst": dst, "type": p_type, "status": f"Departs: {dep_time}", "train_name": train_name}
                 else:
-                    price = fare_data
-                    
-                return {"src": src, "dst": dst, "type": p_type, "status": status, "price": price}
+                    return {"src": src, "dst": dst, "type": p_type, "status": "Train not found on route", "train_name": "N/A"}
             
-            else:
-                return {"src": src, "dst": dst, "type": p_type, "status": "Train doesn't run on this route", "price": 0}
+            return {"src": src, "dst": dst, "type": p_type, "status": "No Trains", "train_name": "N/A"}
             
     except Exception as e:
-        print(f"Fetch Error: {str(e)}")
-        return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Parse Error", "price": 0}
-
+        return {"src": src, "dst": dst, "type": p_type, "error": True, "status": "Fetch Error", "train_name": "N/A"}
 
 async def orchestrate_search(train, travel_date, cls, src, dst):
     pairs = generate_pairs(TRAIN_ROUTE, src, dst, spread=2)
-    
-    # Guard clause if the stations selected aren't in our hardcoded test route
     if not pairs:
-        return [{"src": src, "dst": dst, "type": "baseline", "error": True, "status": "Station not in test route", "price": 0}]
+        return [{"src": src, "dst": dst, "type": "baseline", "error": True, "status": "Station not in test route", "train_name": "N/A"}]
 
     async with aiohttp.ClientSession() as session:
         tasks = [fetch_availability(session, train, travel_date, cls, p["src"], p["dst"], p["type"]) for p in pairs]
@@ -163,7 +134,7 @@ async def orchestrate_search(train, travel_date, cls, src, dst):
 
 # --- 5. STREAMLIT UI ---
 st.title("Smart Route Finder")
-st.markdown("<p style='color: #94a3b8;'>Find hidden booking quotas instantly.</p>", unsafe_allow_html=True)
+st.markdown("<p style='color: #94a3b8;'>Routing via Train Schedules.</p>", unsafe_allow_html=True)
 
 with st.container():
     col1, col2 = st.columns(2)
@@ -171,35 +142,27 @@ with st.container():
     with col1:
         default_src_idx = list(STATIONS.keys()).index("ED") if "ED" in STATIONS else 0
         src_input = st.selectbox("From", options=list(STATIONS.keys()), index=default_src_idx, format_func=lambda x: f"{x} - {STATIONS[x]}")
-        
-        train_input = st.text_input("Train No.", value="20630")
-        
+        train_input = st.text_input("Train No.", value="17422") # Updated default to match your JSON
         date_input = st.date_input("Travel Date", min_value=datetime.today())
-        
-        # NOTE: Most IRCTC APIs require YYYY-MM-DD. 
-        # If this fails with a date error, change it back to "%d-%m-%Y"
         formatted_date = date_input.strftime("%Y-%m-%d") 
-
 
     with col2:
         default_dst_idx = list(STATIONS.keys()).index("TPTY") if "TPTY" in STATIONS else 1
         dst_input = st.selectbox("To", options=list(STATIONS.keys()), index=default_dst_idx, format_func=lambda x: f"{x} - {STATIONS[x]}")
-        
-        cls_input = st.selectbox("Class", options=["2A", "3A", "SL", "1A"])
+        cls_input = st.selectbox("Class", options=["2A", "3A", "SL"])
 
-
-if st.button("Find Better Waitlist", type="primary", use_container_width=True):
+if st.button("Search Route Options", type="primary", use_container_width=True):
     if src_input == dst_input:
         st.error("Source and Destination cannot be the same.")
     else:
-        with st.spinner("Fetching live data from IRCTC via RapidAPI..."):
+        with st.spinner("Fetching live train schedules..."):
             
             raw_results = asyncio.run(orchestrate_search(train_input, formatted_date, cls_input, src_input, dst_input))
             
             baseline = next((r for r in raw_results if r["type"] == "baseline"), None)
             alternates = [r for r in raw_results if r["type"] != "baseline" and not r.get("error")]
             
-            st.markdown("### Search Results")
+            st.markdown("### Route Options")
             
             if baseline:
                 st.markdown(f"""
@@ -210,34 +173,26 @@ if st.button("Find Better Waitlist", type="primary", use_container_width=True):
                 """, unsafe_allow_html=True)
                 
                 b_col1, b_col2 = st.columns(2)
-                b_col1.metric("Current Status", baseline['status'])
-                b_col2.metric("Price", f"₹{baseline['price']}")
+                b_col1.metric("Schedule", baseline.get('status', 'N/A'))
+                b_col2.metric("Train Name", baseline.get('train_name', 'N/A'))
                 
             st.divider()
             
             if alternates:
-                st.markdown("### Recommended Alternates")
                 for alt in alternates:
-                    # Skip rendering if it returned a raw Parse Error
-                    if alt['status'] == "Parse Error":
+                    if alt['status'] in ["Parse Error", "Fetch Error"]:
                         continue
 
                     st.markdown(f"""
                     <div class="hacked-card">
-                        <div style="font-size: 12px; color: #10b981; font-weight: 600; margin-bottom: 8px;">ALTERNATE QUOTA FOUND</div>
+                        <div style="font-size: 12px; color: #10b981; font-weight: 600; margin-bottom: 8px;">ALTERNATE BOARDING</div>
                         <h4>{alt['src']} ➔ {alt['dst']}</h4>
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    a_col1, a_col2, a_col3 = st.columns(3)
-                    a_col1.metric("Status", alt['status'])
-                    a_col2.metric("Total Fare", f"₹{alt['price']}")
-                    
-                    try:
-                        extra_cost = int(alt['price']) - int(baseline['price'])
-                        a_col3.metric("Cost Difference", f"₹{extra_cost}")
-                    except (ValueError, TypeError):
-                        a_col3.metric("Cost Difference", "N/A")
+                    a_col1, a_col2 = st.columns(2)
+                    a_col1.metric("Schedule", alt.get('status', 'N/A'))
+                    a_col2.metric("Train Name", alt.get('train_name', 'N/A'))
             else:
-                st.info("No alternate routes could be fetched successfully.")
-                           
+                st.info("No alternate schedules could be fetched.")
+        
