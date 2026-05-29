@@ -2,6 +2,7 @@ import streamlit as st
 import asyncio
 import aiohttp
 import json
+import networkx as nx
 from datetime import datetime
 
 # --- 1. UI CONFIGURATION & CUSTOM CSS ---
@@ -196,3 +197,41 @@ if st.button("Search Route Options", type="primary", use_container_width=True):
             else:
                 st.info("No alternate schedules could be fetched.")
         
+def find_seat_hops(vacant_berths, source, destination, route_stations):
+    """
+    vacant_berths: List of dicts e.g., [{"coach": "B2", "berth": 15, "from": "MMCT", "to": "KOTA"}]
+    route_stations: List of station codes in order e.g., ["MMCT", "BRC", "RTM", "KOTA", "NDLS"]
+    """
+    G = nx.DiGraph()
+    
+    # Map station codes to their index in the route for directional checking
+    station_idx = {stn: idx for idx, stn in enumerate(route_stations)}
+    
+    # Add nodes (Stations)
+    for stn in route_stations:
+        G.add_node(stn)
+        
+    # Add edges (Vacant Seats)
+    for seat in vacant_berths:
+        src = seat["from"]
+        dst = seat["to"]
+        
+        # Only add edge if it moves forward along the route
+        if src in station_idx and dst in station_idx and station_idx[src] < station_idx[dst]:
+            # Weight is 1. We want the path with the lowest weight (fewest seat changes)
+            G.add_edge(src, dst, weight=1, details=seat)
+            
+    try:
+        # Find the shortest path (fewest hops)
+        path = nx.shortest_path(G, source=source, target=destination, weight='weight')
+        
+        # Reconstruct the itinerary
+        itinerary = []
+        for i in range(len(path) - 1):
+            edge_data = G.get_edge_data(path[i], path[i+1])
+            itinerary.append(edge_data['details'])
+            
+        return itinerary
+    
+    except nx.NetworkXNoPath:
+        return None # No confirmed route available
