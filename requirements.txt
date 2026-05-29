@@ -1,4 +1,4 @@
 streamlit
 aiohttp
 pandas
-network
+networkx
